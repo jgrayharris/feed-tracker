@@ -1,0 +1,1042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Feeds">
+<meta name="theme-color" content="#121419">
+<meta name="color-scheme" content="dark">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Feeds</title>
+<!--
+  Baby Feeding Tracker v1.1 (2026-10-10, pump tracker removed) — spec: Current-state/02_Spec.md
+  Everything lives in this one file. Sections in the <script>:
+    1. Time zone helpers     (local-time math; DST-safe)
+    2. Calculations          (pure functions — the formulas from the spec)
+    3. Display text          (turns numbers into what's shown on screen)
+    4. CSV export / import
+    5. Storage
+    6. App screens and buttons
+    7. Self-test             (open index.html?test)
+-->
+<style>
+:root {
+  --bg: #121419; --card: #1b1e25; --card2: #23262f; --line: #30343e;
+  --text: #d9d4ca; --muted: #8d919a; --dim: #62666f;
+  --accent: #d29a55; --accent-ink: #1a1408; --accent-soft: #33281a;
+  --danger: #d08a78;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body {
+  font: 17px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+  min-height: 100vh;
+}
+button { font: inherit; color: inherit; touch-action: manipulation; -webkit-tap-highlight-color: transparent; cursor: pointer; }
+.view { max-width: 520px; margin: 0 auto; padding: 10px 14px calc(110px + env(safe-area-inset-bottom)); }
+.top { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 4px 10px; }
+.top h1 { font-size: 20px; margin: 0; font-weight: 600; color: var(--muted); }
+.top .clock { color: var(--dim); font-variant-numeric: tabular-nums; }
+.card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; }
+.label { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.sub { color: var(--muted); font-size: 15px; margin-top: 6px; }
+.banner { background: var(--accent-soft); color: var(--text); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; font-size: 15px; }
+
+.hero .big { font-size: 40px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.hero .status { font-size: 22px; margin-top: 6px; color: var(--accent); font-weight: 600; }
+.hero .status.none { color: var(--muted); font-weight: 500; }
+
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 12px; }
+.stat .val { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat .unit { font-size: 16px; color: var(--muted); font-weight: 500; }
+.stat .lbl { color: var(--muted); font-size: 14px; }
+.stat.wide { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 12px; font-size: 16px; }
+
+.counts { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.btnrow { display: grid; gap: 10px; margin-top: 12px; }
+.btnrow.two { grid-template-columns: 1fr 1fr; }
+.btnrow.three { grid-template-columns: 1fr 1fr 1fr; }
+.btn {
+  min-height: 56px; border-radius: 14px; border: 1px solid var(--line); background: var(--card2);
+  font-size: 18px; font-weight: 600; padding: 0 10px; width: 100%;
+}
+.btn:active { transform: scale(.98); background: var(--line); }
+.btn.next { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.danger { color: var(--danger); border-color: #4a2f2a; }
+.btn.small { min-height: 48px; font-size: 16px; }
+
+.bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+  padding: 18px 14px calc(10px + env(safe-area-inset-bottom));
+  background: linear-gradient(rgba(18,20,25,0), var(--bg) 35%);
+}
+.bar-inner { max-width: 520px; margin: 0 auto; display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; }
+.bar-inner.one { grid-template-columns: 1fr; }
+.bar .btn { min-height: 60px; }
+
+/* Sheet (log / edit form) */
+.sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+.sheet {
+  background: var(--card); width: 100%; max-width: 520px; border-radius: 20px 20px 0 0;
+  padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); max-height: 94vh; overflow: auto;
+}
+.sheet h2 { margin: 0 0 14px; font-size: 20px; }
+.field { margin-bottom: 14px; }
+.field > label, .field > .flabel { display: block; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.hint { color: var(--muted); font-size: 14px; margin-top: 6px; }
+.err { color: var(--danger); font-size: 15px; min-height: 1.2em; margin: 4px 0 10px; }
+input[type=time], input[type=date], input[type=text] {
+  -webkit-appearance: none; appearance: none; display: block;
+  width: 100%; min-height: 54px; font: inherit; font-size: 22px; text-align: left;
+  background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px;
+}
+input::-webkit-date-and-time-value { text-align: left; }
+input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.stepper { display: grid; grid-template-columns: 60px 1fr 60px; gap: 8px; }
+.stepper input { text-align: center; }
+.stepper .btn { font-size: 26px; padding: 0; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.seg .btn[aria-pressed=true] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* History */
+.day { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 18px 4px 6px; }
+.row {
+  display: flex; gap: 12px; align-items: center; width: 100%; text-align: left;
+  background: var(--card); border: 0; border-radius: 12px; padding: 12px 14px; min-height: 56px; margin-bottom: 6px;
+}
+.row .t { font-variant-numeric: tabular-nums; color: var(--muted); width: 80px; flex: none; }
+.row .k { font-weight: 600; width: 64px; flex: none; }
+.row .d { color: var(--text); }
+.empty { color: var(--muted); text-align: center; padding: 30px 0; }
+
+/* Settings */
+.settings h3 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.note { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+a { color: var(--accent); }
+
+/* Toast */
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 20;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  background: #2c3039; color: var(--text); border-radius: 14px; padding: 8px 8px 8px 16px;
+  display: flex; gap: 14px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  max-width: 92vw; min-height: 52px; font-size: 16px;
+}
+.toast button { min-height: 44px; padding: 0 18px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+
+/* Self-test page */
+.tests table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tests td, .tests th { padding: 6px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.tests .pass { color: #8fbf7f; } .tests .fail { color: #e07a6a; font-weight: 700; }
+.tests .summary { font-size: 22px; font-weight: 700; margin: 8px 0 14px; }
+</style>
+</head>
+<body>
+
+<!-- ============ Dashboard ============ -->
+<main id="dash" class="view">
+  <header class="top"><h1>Feeds</h1><span class="clock" id="clock"></span></header>
+  <div class="banner" id="banner" hidden></div>
+
+  <section class="card hero">
+    <div class="label">Next feed</div>
+    <div class="big" id="winRange"></div>
+    <div class="status" id="winStatus"></div>
+    <div class="sub" id="winLast"></div>
+  </section>
+
+  <section class="card stats">
+    <div class="stat">
+      <div class="val"><span id="oz24"></span> <span class="unit">oz</span></div>
+      <div class="lbl">in last 24h</div>
+      <div class="sub">Yesterday: <span id="ozYday"></span> oz</div>
+    </div>
+    <div class="stat">
+      <div class="val" id="avgDur"></div>
+      <div class="lbl" id="avgDurLbl"></div>
+    </div>
+    <div class="stat wide" id="targetLine"></div>
+  </section>
+
+  <section class="card">
+    <div class="label">Diapers — last 24h</div>
+    <div class="counts" id="diaperCounts"></div>
+    <div class="btnrow three">
+      <button class="btn" data-diaper="wet">Wet</button>
+      <button class="btn" data-diaper="dirty">Dirty</button>
+      <button class="btn" data-diaper="both">Both</button>
+    </div>
+  </section>
+
+  <nav class="bar"><div class="bar-inner">
+    <button class="btn" id="goHistory">History</button>
+    <button class="btn primary" id="logFeed">+ Log feed</button>
+    <button class="btn" id="goSettings">Settings</button>
+  </div></nav>
+</main>
+
+<!-- ============ History ============ -->
+<section id="history" class="view" hidden>
+  <header class="top"><h1>History</h1></header>
+  <div id="histList"></div>
+  <button class="btn small" id="histMore" hidden>Load more</button>
+  <nav class="bar"><div class="bar-inner one"><button class="btn" data-back>← Back</button></div></nav>
+</section>
+
+<!-- ============ Settings ============ -->
+<section id="settings" class="view settings" hidden>
+  <header class="top"><h1>Settings</h1></header>
+
+  <div class="card">
+    <h3>Target per feed (from pediatrician)</h3>
+    <div class="two-col">
+      <div class="field"><label for="sTMin">Min oz</label><input type="text" inputmode="decimal" id="sTMin" placeholder="—"></div>
+      <div class="field"><label for="sTMax">Max oz</label><input type="text" inputmode="decimal" id="sTMax" placeholder="—"></div>
+    </div>
+    <p class="note">Leave both blank until the pediatrician gives you a range.</p>
+  </div>
+
+  <div class="card">
+    <h3>Next-feed window</h3>
+    <div class="two-col">
+      <div class="field"><label for="sWMin">From (hours)</label><input type="text" inputmode="decimal" id="sWMin"></div>
+      <div class="field"><label for="sWMax">To (hours)</label><input type="text" inputmode="decimal" id="sWMax"></div>
+    </div>
+    <div class="field">
+      <span class="flabel">Count from the last feed's</span>
+      <div class="seg" id="sBasis">
+        <button class="btn" data-val="start">Start</button>
+        <button class="btn" data-val="end">End</button>
+      </div>
+    </div>
+    <div class="field"><label for="sN">Averages use the last … feeds</label><input type="text" inputmode="numeric" id="sN"></div>
+    <div class="err" id="sErr"></div>
+    <button class="btn primary" id="sSave">Save settings</button>
+  </div>
+
+  <div class="card">
+    <h3>Backup</h3>
+    <div class="btnrow two" style="margin-top:0">
+      <button class="btn" id="exportBtn">Export CSV</button>
+      <button class="btn" id="importBtn">Import CSV</button>
+    </div>
+    <input type="file" id="importFile" accept=".csv,text/csv,text/plain" hidden>
+    <p class="note" id="backupNote"></p>
+    <p class="note">Your data is saved only on this phone. Export a backup every few days (Save to Files or send it to yourself).</p>
+  </div>
+
+  <p class="note" style="text-align:center"><a href="?test">Check the math (self-test)</a></p>
+  <nav class="bar"><div class="bar-inner one"><button class="btn" data-back>← Back</button></div></nav>
+</section>
+
+<!-- ============ Log / edit sheet ============ -->
+<div class="sheet-bg" id="sheetBg" hidden>
+  <form class="sheet" id="sheet" novalidate>
+    <h2 id="sheetTitle">Log feed</h2>
+
+    <div class="field" id="dateField">
+      <label for="fDate">Date</label>
+      <input type="date" id="fDate">
+    </div>
+    <div class="field">
+      <label for="fTime" id="fTimeLbl">End time</label>
+      <input type="time" id="fTime">
+      <div class="hint" id="fTimeHint"></div>
+    </div>
+
+    <div id="feedFields">
+      <div class="field">
+        <label for="fDur">Duration (min)</label>
+        <div class="stepper">
+          <button type="button" class="btn" data-step="fDur" data-by="-1" aria-label="1 minute less">−</button>
+          <input type="text" inputmode="numeric" id="fDur">
+          <button type="button" class="btn" data-step="fDur" data-by="1" aria-label="1 minute more">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="fOz">Amount (oz)</label>
+        <div class="stepper">
+          <button type="button" class="btn" data-step="fOz" data-by="-0.25" aria-label="a quarter ounce less">−</button>
+          <input type="text" inputmode="decimal" id="fOz">
+          <button type="button" class="btn" data-step="fOz" data-by="0.25" aria-label="a quarter ounce more">+</button>
+        </div>
+        <div class="hint" id="prefillNote">Duration and amount are copied from the last feed — check them.</div>
+      </div>
+    </div>
+
+    <div class="field" id="kindField">
+      <span class="flabel">Diaper</span>
+      <div class="seg" id="fKind">
+        <button type="button" class="btn" data-val="wet">Wet</button>
+        <button type="button" class="btn" data-val="dirty">Dirty</button>
+        <button type="button" class="btn" data-val="both">Both</button>
+      </div>
+    </div>
+
+    <div class="err" id="fErr"></div>
+    <button type="button" class="btn danger" id="fDelete" style="margin-bottom:10px">Delete</button>
+    <div class="btnrow two" style="margin-top:0">
+      <button type="button" class="btn" id="fCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="fSave">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden><span id="toastMsg"></span><button id="toastUndo" hidden>Undo</button></div>
+
+<script>
+'use strict';
+
+const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
+const pad = n => String(n).padStart(2, '0');
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// =====================================================================
+// 1. Time zone helpers
+//    All math is done in elapsed time (epoch ms). These helpers convert
+//    to and from the phone's local wall-clock time, so DST is handled by
+//    the browser's time zone database. The self-test passes a fixed zone.
+// =====================================================================
+function makeTz(zone) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, hourCycle: 'h23', weekday: 'short',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  });
+  function parts(ms) {
+    const o = {};
+    for (const p of fmt.formatToParts(new Date(ms))) o[p.type] = p.value;
+    return { y: +o.year, mo: +o.month, d: +o.day, h: (+o.hour) % 24, mi: +o.minute, s: +o.second, wd: o.weekday };
+  }
+  function offset(ms) {
+    const whole = ms - (((ms % 1000) + 1000) % 1000);
+    const p = parts(whole);
+    return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - whole;
+  }
+  // Local wall-clock time -> epoch ms. In the repeated hour when DST ends,
+  // this picks the first (daylight) occurrence, same as the Python oracle.
+  function fromLocal(y, mo, d, h, mi) {
+    const guess = Date.UTC(y, mo - 1, d, h, mi);
+    const o1 = offset(guess);
+    let t = guess - o1;
+    const o2 = offset(t);
+    if (o2 !== o1) t = guess - o2;
+    return t;
+  }
+  // Midnight that starts the local calendar day `n` days from the day containing ms.
+  function dayStart(ms, n) {
+    const p = parts(ms), q = addDays(p.y, p.mo, p.d, n);
+    return fromLocal(q.y, q.mo, q.d, 0, 0);
+  }
+  const clock = p => `${p.h % 12 || 12}:${pad(p.mi)}`;
+  const ampm = p => (p.h < 12 ? 'AM' : 'PM');
+  function time(ms) { const p = parts(ms); return `${clock(p)} ${ampm(p)}`; }
+  function range(a, b) {
+    const pa = parts(a), pb = parts(b);
+    return ampm(pa) === ampm(pb) ? `${clock(pa)}–${clock(pb)} ${ampm(pb)}` : `${time(a)}–${time(b)}`;
+  }
+  function ymd(ms) { const p = parts(ms); return `${p.y}-${pad(p.mo)}-${pad(p.d)}`; }
+  function hm(ms) { const p = parts(ms); return `${pad(p.h)}:${pad(p.mi)}`; }
+  function dayLabel(ms, now) {
+    const d = dayStart(ms, 0);
+    if (d === dayStart(now, 0)) return 'Today';
+    if (d === dayStart(now, -1)) return 'Yesterday';
+    const p = parts(ms);
+    return `${p.wd}, ${MONTHS[p.mo - 1]} ${p.d}`;
+  }
+  return { zone, parts, fromLocal, dayStart, time, range, ymd, hm, dayLabel };
+}
+
+function addDays(y, mo, d, n) {
+  const t = new Date(Date.UTC(y, mo - 1, d + n));
+  return { y: t.getUTCFullYear(), mo: t.getUTCMonth() + 1, d: t.getUTCDate() };
+}
+
+// =====================================================================
+// 2. Calculations (02_Spec.md §4). Pure functions: data in, numbers out.
+// =====================================================================
+const DEFAULT_SETTINGS = {
+  targetMinOz: null, targetMaxOz: null,
+  windowMinHrs: 2, windowMaxHrs: 3,
+  clockBasis: 'start', recentN: 4,
+};
+
+const startMs = f => f.endMs - f.durationMin * MIN;
+const in24h = (t, now) => now - DAY < t && t <= now;
+
+// Entry with the largest timestamp — never "the last one entered".
+function latest(list, key) {
+  let best = null;
+  for (const x of list) if (!best || x[key] > best[key]) best = x;
+  return best;
+}
+
+function nextWindow(feeds, now, s) {
+  const f = latest(feeds, 'endMs');
+  if (!f) return null;
+  const basis = s.clockBasis === 'end' ? f.endMs : startMs(f);
+  const openMs = basis + s.windowMinHrs * HOUR;
+  const closeMs = basis + s.windowMaxHrs * HOUR;
+  let state, mins = 0;
+  if (now < openMs) { state = 'before'; mins = Math.floor((openMs - now) / MIN); }
+  else if (now <= closeMs) { state = 'open'; }
+  else { state = 'overdue'; mins = Math.floor((now - closeMs) / MIN); }
+  return { feed: f, basis, openMs, closeMs, state, mins };
+}
+
+function rollingOz(feeds, now) {
+  return feeds.filter(f => in24h(f.endMs, now)).reduce((a, f) => a + f.oz, 0);
+}
+
+// Calendar-day boundaries (23 or 25 hours long on DST days), not now − 48h.
+function yesterdayOz(feeds, now, tz) {
+  const from = tz.dayStart(now, -1), to = tz.dayStart(now, 0);
+  return feeds.filter(f => from <= f.endMs && f.endMs < to).reduce((a, f) => a + f.oz, 0);
+}
+
+function recentFeeds(feeds, n) {
+  return feeds.slice().sort((a, b) => a.endMs - b.endMs).slice(-n);
+}
+
+const mean = xs => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+function diaperCounts(diapers, now) {
+  let wet = 0, dirty = 0;
+  for (const d of diapers) {
+    if (!in24h(d.timeMs, now)) continue;
+    if (d.kind === 'wet' || d.kind === 'both') wet++;
+    if (d.kind === 'dirty' || d.kind === 'both') dirty++;
+  }
+  return { wet, dirty };
+}
+
+// The time picker only gives HH:MM. Assume today; more than 5 min in the
+// future means it was yesterday (a feed that ended before midnight).
+function resolveEntryTime(h, mi, now, tz) {
+  const p = tz.parts(now);
+  let t = tz.fromLocal(p.y, p.mo, p.d, h, mi);
+  if (t > now + 5 * MIN) {
+    const q = addDays(p.y, p.mo, p.d, -1);
+    t = tz.fromLocal(q.y, q.mo, q.d, h, mi);
+  }
+  return t;
+}
+
+// =====================================================================
+// 3. Display text. Rounding: oz to 1 decimal (half up), minutes whole.
+// =====================================================================
+const round1 = x => (Math.round(x * 10 + 1e-9) / 10).toFixed(1);
+// A single logged amount is shown as entered (2.75 stays 2.75); only computed numbers are rounded.
+const entryOz = oz => (Number.isInteger(Math.round(oz * 100) / 10) ? oz.toFixed(1) : oz.toFixed(2));
+
+function dashboardView(data, now, tz) {
+  const s = data.settings, v = {};
+
+  const w = nextWindow(data.feeds, now, s);
+  if (!w) {
+    v.latestFeedId = null; v.windowRange = ''; v.windowState = 'none';
+    v.windowStatus = 'Log a feed to start.'; v.lastFeed = '';
+  } else {
+    v.latestFeedId = w.feed.id;
+    v.windowRange = tz.range(w.openMs, w.closeMs);
+    v.windowState = w.state;
+    v.windowStatus = w.state === 'before' ? `Opens in ${w.mins} min`
+      : w.state === 'open' ? 'Window open' : `Overdue by ${w.mins} min`;
+    v.lastFeed = `Last feed ${tz.range(startMs(w.feed), w.feed.endMs)} · ${entryOz(w.feed.oz)} oz`;
+  }
+
+  v.oz24 = round1(rollingOz(data.feeds, now));
+  v.ozYesterday = round1(yesterdayOz(data.feeds, now, tz));
+
+  const r = recentFeeds(data.feeds, s.recentN);
+  v.recentCount = r.length;
+  v.recentAvgOz = r.length ? round1(mean(r.map(f => f.oz))) : '—';
+  v.avgDur = r.length ? String(Math.round(mean(r.map(f => f.durationMin)))) : '—';
+  v.target = s.targetMinOz != null && s.targetMaxOz != null ? `${round1(s.targetMinOz)}–${round1(s.targetMaxOz)}` : null;
+  v.targetLine = (v.target ? `Target ${v.target} oz` : 'Set target in Settings') +
+    (r.length ? ` · Recent avg ${v.recentAvgOz} oz (last ${r.length})` : ' · Recent avg —');
+
+  const dc = diaperCounts(data.diapers, now);
+  v.wet = dc.wet; v.dirty = dc.dirty;
+  return v;
+}
+
+// =====================================================================
+// 4. CSV export / import (02_Spec.md §6)
+//    type,id,time_local,duration_min,oz,diaper_kind
+// =====================================================================
+const CSV_HEADER = 'type,id,time_local,duration_min,oz,diaper_kind';
+
+function toCsv(data, tz) {
+  const t = ms => `${tz.ymd(ms)} ${tz.hm(ms)}`;
+  const rows = [
+    ...data.feeds.map(f => ({ ms: f.endMs, line: `feed,${f.id},${t(f.endMs)},${f.durationMin},${f.oz},` })),
+    ...data.diapers.map(d => ({ ms: d.timeMs, line: `diaper,${d.id},${t(d.timeMs)},,,${d.kind}` })),
+  ].sort((a, b) => a.ms - b.ms);
+  return [CSV_HEADER, ...rows.map(r => r.line)].join('\n') + '\n';
+}
+
+function fromCsv(text, tz) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  const out = { feeds: [], diapers: [], bad: 0 };
+  if (!lines.length) return out;
+  const head = lines[0].split(',').map(h => h.trim().toLowerCase());
+  if (!head.includes('type') || !head.includes('time_local')) {
+    throw new Error('This file doesn\'t look like a Feed Tracker CSV (no "type" and "time_local" columns).');
+  }
+  const now = Date.now();
+  for (const line of lines.slice(1)) {
+    const cells = line.split(',').map(c => c.trim());
+    const get = name => { const i = head.indexOf(name); return i < 0 ? '' : (cells[i] || ''); };
+    const m = get('time_local').match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})$/);
+    if (!m) { out.bad++; continue; }
+    const ms = tz.fromLocal(+m[1], +m[2], +m[3], +m[4], +m[5]);
+    const type = get('type').toLowerCase();
+    const id = get('id') || `${type}-${get('time_local')}`;
+    if (type === 'feed') {
+      const dur = Number(get('duration_min')), oz = Number(get('oz'));
+      if (!(Number.isInteger(dur) && dur > 0 && oz > 0)) { out.bad++; continue; }
+      out.feeds.push({ id, endMs: ms, durationMin: dur, oz, createdMs: now, updatedMs: now });
+    } else if (type === 'diaper') {
+      const kind = get('diaper_kind').toLowerCase();
+      if (!['wet', 'dirty', 'both'].includes(kind)) { out.bad++; continue; }
+      out.diapers.push({ id, timeMs: ms, kind });
+    } else {
+      out.bad++;
+    }
+  }
+  return out;
+}
+
+// Adds entries whose id isn't already present. Returns counts.
+function mergeImport(data, parsed) {
+  let added = 0, skipped = 0;
+  for (const key of ['feeds', 'diapers']) {
+    const ids = new Set(data[key].map(e => e.id));
+    for (const e of parsed[key]) {
+      if (ids.has(e.id)) { skipped++; continue; }
+      data[key].push(e); ids.add(e.id); added++;
+    }
+  }
+  return { added, skipped, bad: parsed.bad };
+}
+
+// =====================================================================
+// 5. Storage — one localStorage key (02_Spec.md §1–2)
+// =====================================================================
+const KEY = 'feedTracker.v1';
+const EXPORT_KEY = 'feedTracker.lastExportMs';
+
+function emptyData() {
+  return { schemaVersion: 1, settings: { ...DEFAULT_SETTINGS }, feeds: [], diapers: [] };
+}
+
+function normalize(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('not an object');
+  const d = emptyData();
+  const s = raw.settings || {};
+  const pos = x => typeof x === 'number' && x > 0;
+  if (pos(s.targetMinOz) && pos(s.targetMaxOz)) { d.settings.targetMinOz = s.targetMinOz; d.settings.targetMaxOz = s.targetMaxOz; }
+  if (pos(s.windowMinHrs) && pos(s.windowMaxHrs) && s.windowMinHrs <= s.windowMaxHrs) {
+    d.settings.windowMinHrs = s.windowMinHrs; d.settings.windowMaxHrs = s.windowMaxHrs;
+  }
+  if (s.clockBasis === 'end') d.settings.clockBasis = 'end';
+  if (Number.isInteger(s.recentN) && s.recentN > 0) d.settings.recentN = s.recentN;
+  const arr = x => (Array.isArray(x) ? x : []);
+  d.feeds = arr(raw.feeds).filter(f => f && f.id && Number.isFinite(f.endMs) && f.durationMin > 0 && f.oz > 0);
+  d.diapers = arr(raw.diapers).filter(x => x && x.id && Number.isFinite(x.timeMs) && ['wet', 'dirty', 'both'].includes(x.kind));
+  return d;
+}
+
+function loadData() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(KEY);
+    if (!raw) return { data: emptyData(), problem: false };
+    return { data: normalize(JSON.parse(raw)), problem: false };
+  } catch (e) {
+    // Keep the unreadable copy rather than overwrite it; start empty.
+    try { if (raw) localStorage.setItem(`${KEY}.unreadable-${Date.now()}`, raw); } catch (_) {}
+    return { data: emptyData(), problem: true };
+  }
+}
+
+function uuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+// =====================================================================
+// 6. App screens and buttons
+// =====================================================================
+const $ = sel => document.querySelector(sel);
+let tz, data;
+let sheetCtx = null;      // { type: 'feed'|'diaper', id: string|null }
+let historyDays = 7;
+
+function store() {
+  try { localStorage.setItem(KEY, JSON.stringify(data)); }
+  catch (e) { alert('Could not save on this phone (storage is full or blocked). Export a backup from Settings.'); }
+}
+
+function listFor(type) { return type === 'feed' ? data.feeds : data.diapers; }
+function removeEntry(type, id) {
+  const key = type === 'feed' ? 'feeds' : 'diapers';
+  data[key] = data[key].filter(e => e.id !== id);
+}
+
+function render() {
+  const now = Date.now();
+  const v = dashboardView(data, now, tz);
+  $('#clock').textContent = tz.time(now);
+  $('#winRange').textContent = v.windowRange;
+  $('#winRange').hidden = !v.windowRange;
+  $('#winStatus').textContent = v.windowStatus;
+  $('#winStatus').className = 'status' + (v.windowState === 'none' ? ' none' : '');
+  $('#winLast').textContent = v.lastFeed;
+  $('#oz24').textContent = v.oz24;
+  $('#ozYday').textContent = v.ozYesterday;
+  $('#avgDur').innerHTML = v.avgDur === '—' ? '—' : `${v.avgDur} <span class="unit">min</span>`;
+  $('#avgDurLbl').textContent = v.recentCount ? `avg feed (last ${v.recentCount})` : 'avg feed';
+  $('#targetLine').textContent = v.targetLine;
+  $('#diaperCounts').textContent = `${v.wet} wet · ${v.dirty} dirty`;
+  if (!$('#history').hidden) renderHistory();
+}
+
+function showView(id) {
+  for (const v of ['dash', 'history', 'settings']) $('#' + v).hidden = v !== id;
+  window.scrollTo(0, 0);
+  if (id === 'history') { historyDays = 7; renderHistory(); }
+  if (id === 'settings') fillSettings();
+  if (id === 'dash') render();
+}
+
+// ---- Toast with optional Undo ----
+let toastTimer = null;
+function toast(msg, undo) {
+  $('#toastMsg').textContent = msg;
+  const btn = $('#toastUndo');
+  btn.hidden = !undo;
+  btn.onclick = () => { hideToast(); if (undo) undo(); };
+  $('#toast').hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 5000);
+}
+function hideToast() { $('#toast').hidden = true; $('#toastUndo').onclick = null; }
+
+// ---- One-tap diaper log ----
+const KIND_LABEL = { wet: 'Wet', dirty: 'Dirty', both: 'Wet + dirty' };
+function logDiaper(kind) {
+  const e = { id: uuid(), timeMs: Date.now(), kind };
+  data.diapers.push(e);
+  store(); render();
+  toast(`${KIND_LABEL[kind]} diaper logged`, () => { removeEntry('diaper', e.id); store(); render(); });
+}
+
+// ---- Sheet: log / edit ----
+function segSet(el, val) { for (const b of el.querySelectorAll('[data-val]')) b.setAttribute('aria-pressed', String(b.dataset.val === val)); }
+function segGet(el) { const b = el.querySelector('[aria-pressed=true]'); return b ? b.dataset.val : null; }
+
+function openSheet(type, entry) {
+  sheetCtx = { type, id: entry ? entry.id : null };
+  const isFeed = type === 'feed', editing = !!entry;
+  const now = Date.now();
+  const ms = entry ? (isFeed ? entry.endMs : entry.timeMs) : now;
+  $('#sheetTitle').textContent = (editing ? 'Edit ' : 'Log ') + type;
+  $('#dateField').hidden = !editing;
+  $('#fDate').value = tz.ymd(ms);
+  $('#fTime').value = tz.hm(ms);
+  $('#fTimeLbl').textContent = isFeed ? 'End time' : 'Time';
+  $('#feedFields').hidden = !isFeed;
+  $('#kindField').hidden = type !== 'diaper';
+  $('#fDelete').hidden = !editing;
+  $('#fErr').textContent = '';
+  if (isFeed) {
+    const last = latest(data.feeds, 'endMs');
+    const src = entry || last;
+    $('#fDur').value = src ? src.durationMin : '';
+    $('#fOz').value = src ? String(src.oz) : '';
+    $('#prefillNote').hidden = editing || !last;
+  }
+  if (type === 'diaper') segSet($('#fKind'), entry.kind);
+  updateTimeHint();
+  $('#sheetBg').hidden = false;
+}
+function closeSheet() { $('#sheetBg').hidden = true; sheetCtx = null; }
+
+function parseHM(s) { const m = /^(\d{1,2}):(\d{2})/.exec(s || ''); return m ? { h: +m[1], mi: +m[2] } : null; }
+function parseYMD(s) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? { y: +m[1], mo: +m[2], d: +m[3] } : null; }
+
+function sheetTime() {
+  const t = parseHM($('#fTime').value);
+  if (!t) return null;
+  if (!sheetCtx.id) return resolveEntryTime(t.h, t.mi, Date.now(), tz);
+  const d = parseYMD($('#fDate').value);
+  return d ? tz.fromLocal(d.y, d.mo, d.d, t.h, t.mi) : null;
+}
+
+function updateTimeHint() {
+  const hint = $('#fTimeHint');
+  if (!sheetCtx || sheetCtx.id) { hint.textContent = ''; return; }
+  const ms = sheetTime();
+  hint.textContent = ms == null ? '' : `${tz.dayLabel(ms, Date.now())}, ${tz.time(ms)}`;
+}
+
+function saveSheet() {
+  const err = msg => { $('#fErr').textContent = msg; };
+  const ms = sheetTime();
+  if (ms == null) return err(sheetCtx.id ? 'Pick a date and time.' : 'Pick a time.');
+  const type = sheetCtx.type, id = sheetCtx.id, now = Date.now();
+  if (ms > now + 5 * MIN) return err('That time is in the future — check the date and time.');
+
+  if (type === 'feed') {
+    const dur = Number($('#fDur').value.trim());
+    const oz = Number($('#fOz').value.trim().replace(',', '.'));
+    if (!Number.isInteger(dur) || dur <= 0) return err('Duration must be a whole number of minutes.');
+    if (!(oz > 0) || Math.abs(oz * 4 - Math.round(oz * 4)) > 1e-9) return err('Amount must be in quarter ounces, like 2.25 or 2.5.');
+    if (dur > 60 && !confirm(`${dur} minutes is a long feed. Save it?`)) return;
+    if (oz > 6 && !confirm(`${oz} oz is a big feed. Save it?`)) return;
+    if (id) Object.assign(data.feeds.find(f => f.id === id), { endMs: ms, durationMin: dur, oz, updatedMs: now });
+    else data.feeds.push({ id: uuid(), endMs: ms, durationMin: dur, oz, createdMs: now, updatedMs: now });
+  } else {
+    Object.assign(data.diapers.find(x => x.id === id), { timeMs: ms, kind: segGet($('#fKind')) });
+  }
+  store(); closeSheet(); render();
+  toast(id ? 'Saved' : 'Feed saved');
+}
+
+function deleteFromSheet() {
+  if (!confirm(`Delete this ${sheetCtx.type} entry?`)) return;
+  removeEntry(sheetCtx.type, sheetCtx.id);
+  store(); closeSheet(); render();
+  toast('Deleted');
+}
+
+function stepField(id, by) {
+  const el = $('#' + id);
+  const cur = Number(el.value.replace(',', '.')) || 0;
+  if (id === 'fOz') el.value = String(Math.max(0.25, Math.round((cur + by) * 4) / 4));
+  else el.value = String(Math.max(1, Math.round(cur + by)));
+}
+
+// ---- History ----
+function allEntries() {
+  return [
+    ...data.feeds.map(f => ({ type: 'feed', id: f.id, ms: f.endMs, k: 'Feed', d: `${entryOz(f.oz)} oz · ${f.durationMin} min` })),
+    ...data.diapers.map(x => ({ type: 'diaper', id: x.id, ms: x.timeMs, k: 'Diaper', d: KIND_LABEL[x.kind] })),
+  ].sort((a, b) => b.ms - a.ms);
+}
+
+function renderHistory() {
+  const now = Date.now();
+  const cutoff = tz.dayStart(now, -(historyDays - 1));
+  const all = allEntries();
+  const shown = all.filter(e => e.ms >= cutoff);
+  const box = $('#histList');
+  box.textContent = '';
+  if (!all.length) {
+    const p = document.createElement('div'); p.className = 'empty'; p.textContent = 'Nothing logged yet.'; box.append(p);
+  }
+  let lastDay = null;
+  for (const e of shown) {
+    const day = tz.ymd(e.ms);
+    if (day !== lastDay) {
+      const h = document.createElement('div'); h.className = 'day'; h.textContent = tz.dayLabel(e.ms, now); box.append(h);
+      lastDay = day;
+    }
+    const b = document.createElement('button');
+    b.className = 'row'; b.dataset.type = e.type; b.dataset.id = e.id;
+    for (const [cls, txt] of [['t', tz.time(e.ms)], ['k', e.k], ['d', e.d]]) {
+      const s = document.createElement('span'); s.className = cls; s.textContent = txt; b.append(s);
+    }
+    box.append(b);
+  }
+  $('#histMore').hidden = shown.length === all.length;
+}
+
+// ---- Settings ----
+let basisDraft = 'start';
+function fillSettings() {
+  const s = data.settings;
+  $('#sTMin').value = s.targetMinOz ?? '';
+  $('#sTMax').value = s.targetMaxOz ?? '';
+  $('#sWMin').value = s.windowMinHrs;
+  $('#sWMax').value = s.windowMaxHrs;
+  $('#sN').value = s.recentN;
+  basisDraft = s.clockBasis; segSet($('#sBasis'), basisDraft);
+  $('#sErr').textContent = '';
+  let last = null;
+  try { last = Number(localStorage.getItem(EXPORT_KEY)) || null; } catch (_) {}
+  $('#backupNote').textContent = last ? `Last backup: ${tz.dayLabel(last, Date.now())}, ${tz.time(last)}` : 'No backup exported yet.';
+}
+
+function saveSettings() {
+  const err = m => { $('#sErr').textContent = m; };
+  const num = id => { const t = $(id).value.trim().replace(',', '.'); return t === '' ? null : Number(t); };
+  const tMin = num('#sTMin'), tMax = num('#sTMax'), wMin = num('#sWMin'), wMax = num('#sWMax'), n = num('#sN');
+  if ((tMin == null) !== (tMax == null)) return err('Enter both target numbers, or leave both blank.');
+  if (tMin != null && !(tMin > 0 && tMax > 0 && tMin <= tMax)) return err('Target: min and max must be above 0, min no bigger than max.');
+  if (!(wMin > 0 && wMax > 0 && wMin <= wMax && wMax <= 12)) return err('Window hours: above 0, "from" no bigger than "to", at most 12.');
+  if (!(Number.isInteger(n) && n >= 1 && n <= 20)) return err('Averages: a whole number from 1 to 20.');
+  Object.assign(data.settings, { targetMinOz: tMin, targetMaxOz: tMax, windowMinHrs: wMin, windowMaxHrs: wMax, clockBasis: basisDraft, recentN: n });
+  store(); render(); $('#sErr').textContent = '';
+  toast('Settings saved');
+}
+
+async function exportCsv() {
+  const csv = toCsv(data, tz);
+  const name = `feed-tracker-${tz.ymd(Date.now())}.csv`;
+  const file = new File([csv], name, { type: 'text/csv' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });   // iPhone: share sheet → Save to Files
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file); a.download = name;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+    try { localStorage.setItem(EXPORT_KEY, String(Date.now())); } catch (_) {}
+    fillSettings();
+  } catch (e) {
+    if (e && e.name !== 'AbortError') alert('Export failed: ' + e.message);
+  }
+}
+
+async function importCsv(file) {
+  try {
+    const parsed = fromCsv(await file.text(), tz);
+    const r = mergeImport(data, parsed);
+    store(); render();
+    alert(`Imported ${r.added} entries.` + (r.skipped ? ` Skipped ${r.skipped} already here.` : '') + (r.bad ? ` ${r.bad} rows couldn't be read.` : ''));
+    $('#banner').hidden = true;
+  } catch (e) {
+    alert('Import failed: ' + e.message);
+  }
+}
+
+// ---- Wiring ----
+function initApp() {
+  tz = makeTz(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const loaded = loadData();
+  data = loaded.data;
+
+  const banner = $('#banner');
+  if (loaded.problem) {
+    banner.textContent = 'Saved data couldn\'t be read, so the app started empty (a copy was kept). To restore, go to Settings → Import CSV.';
+    banner.hidden = false;
+  } else if (navigator.standalone === false && /iPhone|iPad/.test(navigator.userAgent)) {
+    banner.textContent = 'Tip: tap Share → Add to Home Screen, then log only from that icon. Entries made here in Safari won\'t show up in the Home Screen app.';
+    banner.hidden = false;
+  }
+
+  document.addEventListener('click', e => {
+    const t = e.target.closest('button, a');
+    if (!t) return;
+    if (t.dataset.diaper) logDiaper(t.dataset.diaper);
+    else if (t.dataset.step) stepField(t.dataset.step, Number(t.dataset.by));
+    else if (t.dataset.back !== undefined) showView('dash');
+    else if (t.dataset.val && t.parentElement.classList.contains('seg')) {
+      segSet(t.parentElement, t.dataset.val);
+      if (t.parentElement.id === 'sBasis') basisDraft = t.dataset.val;
+    } else if (t.classList.contains('row')) {
+      const entry = listFor(t.dataset.type).find(x => x.id === t.dataset.id);
+      if (entry) openSheet(t.dataset.type, entry);
+    }
+  });
+  $('#logFeed').onclick = () => openSheet('feed', null);
+  $('#goHistory').onclick = () => showView('history');
+  $('#goSettings').onclick = () => showView('settings');
+  $('#histMore').onclick = () => { historyDays += 7; renderHistory(); };
+  $('#sheet').onsubmit = e => { e.preventDefault(); saveSheet(); };
+  $('#fCancel').onclick = closeSheet;
+  $('#fDelete').onclick = deleteFromSheet;
+  $('#fTime').addEventListener('input', updateTimeHint);
+  $('#fTime').addEventListener('change', updateTimeHint);
+  $('#sSave').onclick = saveSettings;
+  $('#exportBtn').onclick = exportCsv;
+  $('#importBtn').onclick = () => $('#importFile').click();
+  $('#importFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importCsv(f); };
+
+  render();
+  // Recompute every minute (on the minute) and whenever the app comes back to the front.
+  setTimeout(() => { render(); setInterval(render, 60000); }, 60000 - (Date.now() % 60000) + 50);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+}
+
+// =====================================================================
+// 7. Self-test — open index.html?test
+//    Reproduces every case in Work/tests/calc_test_cases.md using the
+//    same functions the app uses. Never touches saved data.
+// =====================================================================
+
+// Copy of Work/tests/fixture.csv (used when that file can't be fetched,
+// e.g. on the phone). If you change the fixture, update this copy too.
+const FIXTURE_CSV = `type,id,time_local,duration_min,oz,diaper_kind
+feed,F1,2026-10-09 11:30,25,2.0,
+feed,F2,2026-10-09 14:00,20,2.5,
+feed,F3,2026-10-09 17:10,30,2.0,
+feed,F4,2026-10-09 20:05,22,2.5,
+feed,F5,2026-10-09 23:50,18,3.0,
+feed,F6,2026-10-10 03:15,25,2.5,
+feed,F7,2026-10-10 06:40,20,3.0,
+feed,F9,2026-10-10 13:20,24,3.0,
+feed,F8,2026-10-10 10:05,28,2.5,
+diaper,D1,2026-10-09 13:00,,,wet
+diaper,D2,2026-10-09 18:00,,,wet
+diaper,D3,2026-10-09 22:00,,,both
+diaper,D4,2026-10-10 02:00,,,dirty
+diaper,D5,2026-10-10 07:00,,,wet
+diaper,D6,2026-10-10 12:00,,,both
+feed,DST1,2026-11-01 00:30,30,3.0,
+feed,DST2,2026-11-01 23:30,20,2.5,
+`;
+
+async function runTests() {
+  let csv = FIXTURE_CSV, source = 'built-in copy of fixture.csv';
+  try {
+    const res = await fetch('../tests/fixture.csv', { cache: 'no-store' });
+    if (res.ok) { csv = await res.text(); source = 'Work/tests/fixture.csv'; }
+  } catch (_) {}
+
+  const tz = makeTz('America/Los_Angeles');
+  const at = s => { const m = s.match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/); return tz.fromLocal(+m[1], +m[2], +m[3], +m[4], +m[5]); };
+  const fx = fromCsv(csv, tz);
+  const S = { ...DEFAULT_SETTINGS, targetMinOz: 2.0, targetMaxOz: 3.0 };
+  const base = { settings: S, feeds: fx.feeds.filter(f => !f.id.startsWith('DST')), diapers: fx.diapers };
+  const dst = fx.feeds.filter(f => f.id.startsWith('DST'));
+  const results = [];
+  const check = (test, what, got, exp) => results.push({ test, what, got, exp, ok: got === exp });
+  const stamp = ms => `${tz.ymd(ms)} ${tz.hm(ms)}`;
+
+  // T1 — dashboard at Sat 2026-10-10 2:00 PM
+  const now1 = at('2026-10-10 14:00');
+  const v1 = dashboardView(base, now1, tz);
+  const r4 = recentFeeds(base.feeds, 4);
+  check('T1', 'Latest feed (max end time)', v1.latestFeedId, 'F9');
+  check('T1', 'Next window', v1.windowRange, '2:56–3:56 PM');
+  check('T1', 'Window status', v1.windowStatus, 'Opens in 56 min');
+  check('T1', 'Rolling 24h oz', v1.oz24, '18.5');
+  check('T1', 'Rolling 24h: F2 (exactly 24h old) excluded', in24h(base.feeds.find(f => f.id === 'F2').endMs, now1), false);
+  check('T1', 'Yesterday oz', v1.ozYesterday, '12.0');
+  check('T1', 'Recent avg oz (raw)', mean(r4.map(f => f.oz)), 2.75);
+  check('T1', 'Recent avg oz (shown)', v1.recentAvgOz, '2.8');
+  check('T1', 'Avg duration (raw)', mean(r4.map(f => f.durationMin)), 24.25);
+  check('T1', 'Avg duration (shown, min)', v1.avgDur, '24');
+  check('T1', 'Averages use last N', v1.recentCount, 4);
+  check('T1', 'Target', v1.targetLine, 'Target 2.0–3.0 oz · Recent avg 2.8 oz (last 4)');
+  check('T1', 'Diapers wet', v1.wet, 4);
+  check('T1', 'Diapers dirty', v1.dirty, 3);
+
+  // T2 — window status as time passes
+  check('T2', 'Status at 3:30 PM', dashboardView(base, at('2026-10-10 15:30'), tz).windowStatus, 'Window open');
+  check('T2', 'Status at 4:10 PM', dashboardView(base, at('2026-10-10 16:10'), tz).windowStatus, 'Overdue by 14 min');
+
+  // T3 — clock basis = end
+  const endData = { ...base, settings: { ...S, clockBasis: 'end' } };
+  const v3 = dashboardView(endData, now1, tz);
+  check('T3', 'Window (basis end)', v3.windowRange, '3:20–4:20 PM');
+  check('T3', 'Status (basis end)', v3.windowStatus, 'Opens in 80 min');
+
+  // T4 — only one feed
+  const v4 = dashboardView({ ...base, feeds: base.feeds.filter(f => f.id === 'F9') }, now1, tz);
+  check('T4', 'Avg duration', v4.avgDur, '24');
+  check('T4', 'Recent avg oz', v4.recentAvgOz, '3.0');
+  check('T4', 'Count shown as (last 1)', v4.recentCount, 1);
+
+  // T5 — no feeds (no diapers either)
+  const v5 = dashboardView(emptyData(), now1, tz);
+  check('T5', 'Next window', v5.windowStatus, 'Log a feed to start.');
+  check('T5', 'Recent avg oz', v5.recentAvgOz, '—');
+  check('T5', 'Avg duration', v5.avgDur, '—');
+  check('T5', 'Rolling 24h oz', v5.oz24, '0.0');
+  check('T5', 'Yesterday oz', v5.ozYesterday, '0.0');
+  check('T5', 'Diapers', `${v5.wet} wet · ${v5.dirty} dirty`, '0 wet · 0 dirty');
+
+  // T6 — logging across midnight
+  const now6 = at('2026-10-10 00:10');
+  check('T6', 'Pick 11:50 PM at 12:10 AM', stamp(resolveEntryTime(23, 50, now6, tz)), '2026-10-09 23:50');
+  check('T6', 'Pick 12:05 AM at 12:10 AM', stamp(resolveEntryTime(0, 5, now6, tz)), '2026-10-10 00:05');
+
+  // T7 — out-of-order entry: same results whatever order entries are stored in
+  const ids = fx.feeds.map(f => f.id);
+  check('T7', 'Fixture lists F9 before F8', ids.indexOf('F9') < ids.indexOf('F8'), true);
+  const reversed = { ...base, feeds: base.feeds.slice().reverse(), diapers: base.diapers.slice().reverse() };
+  check('T7', 'Reversed order → same dashboard as T1', JSON.stringify(dashboardView(reversed, now1, tz)), JSON.stringify(v1));
+
+  // T8 — delete the latest feed (F9): everything recalculates from F8
+  const v8 = dashboardView({ ...base, feeds: base.feeds.filter(f => f.id !== 'F9') }, now1, tz);
+  check('T8', 'Latest feed', v8.latestFeedId, 'F8');
+  check('T8', 'Next window', v8.windowRange, '11:37 AM–12:37 PM');
+  check('T8', 'Window status', v8.windowStatus, 'Overdue by 83 min');
+  check('T8', 'Rolling 24h oz', v8.oz24, '15.5');
+  check('T8', 'Recent avg oz (shown)', v8.recentAvgOz, '2.8');
+  check('T8', 'Avg duration (22.75 → 23)', v8.avgDur, '23');
+
+  // T9 — daylight saving ends Sun 2026-11-01
+  const now9 = at('2026-11-01 00:45');
+  const w9 = nextWindow(dst.filter(f => f.id === 'DST1'), now9, S);
+  check('T9', 'Window opens 1:00 AM PST (09:00 UTC)', new Date(w9.openMs).toISOString(), '2026-11-01T09:00:00.000Z');
+  check('T9', 'Window closes 2:00 AM PST (10:00 UTC)', new Date(w9.closeMs).toISOString(), '2026-11-01T10:00:00.000Z');
+  const v9 = dashboardView({ ...emptyData(), settings: S, feeds: dst.filter(f => f.id === 'DST1') }, now9, tz);
+  check('T9', 'Window shown (not 2:00–3:00 AM)', v9.windowRange, '1:00–2:00 AM');
+  check('T9', 'Status', v9.windowStatus, 'Opens in 75 min');
+  const now9b = at('2026-11-02 08:00');
+  check('T9', 'Nov 1 is a 25-hour day', (tz.dayStart(now9b, 0) - tz.dayStart(now9b, -1)) / HOUR, 25);
+  check('T9', 'Yesterday oz viewed Nov 2, 8:00 AM', round1(yesterdayOz(dst, now9b, tz)), '5.5');
+
+  // Extras — rounding and backup round trip
+  check('Extra', 'Rounding is half up (2.25 → 2.3)', round1(2.25), '2.3');
+  check('Extra', 'A single entry shows as logged (2.75, 3.0)', `${entryOz(2.75)}, ${entryOz(3)}`, '2.75, 3.0');
+  const all = { ...base, feeds: fx.feeds };
+  const back = fromCsv(toCsv(all, tz), tz);
+  const sig = d => JSON.stringify([
+    d.feeds.map(f => [f.id, f.endMs, f.durationMin, f.oz]).sort(),
+    d.diapers.map(x => [x.id, x.timeMs, x.kind]).sort(),
+  ]);
+  check('Extra', 'CSV export → import gives identical entries', sig(back), sig(all));
+  const copy = JSON.parse(JSON.stringify(all));
+  const m = mergeImport(copy, back);
+  check('Extra', 'Re-importing the same file adds nothing', `${m.added} added, ${m.skipped} skipped`, `0 added, ${fx.feeds.length + fx.diapers.length} skipped`);
+
+  // Report
+  const failed = results.filter(r => !r.ok).length;
+  document.title = failed ? `✗ ${failed} failed` : '✓ All passed';
+  const page = document.createElement('main');
+  page.className = 'view tests';
+  page.innerHTML = `<header class="top"><h1>Self-test</h1><a href="./">Back to app</a></header>
+    <div class="summary ${failed ? 'fail' : 'pass'}">${failed ? `✗ ${failed} of ${results.length} checks failed` : `✓ All ${results.length} checks passed`}</div>
+    <p class="note">Fixture: ${source} · Time zone: America/Los_Angeles · Cases from Work/tests/calc_test_cases.md</p>
+    <table><thead><tr><th>Case</th><th>Check</th><th>Expected</th><th>Got</th><th></th></tr></thead><tbody></tbody></table>`;
+  const tbody = page.querySelector('tbody');
+  for (const r of results) {
+    const tr = document.createElement('tr');
+    for (const txt of [r.test, r.what, String(r.exp), String(r.got), r.ok ? 'pass' : 'FAIL']) {
+      const td = document.createElement('td'); td.textContent = txt; tr.append(td);
+    }
+    tr.lastChild.className = r.ok ? 'pass' : 'fail';
+    tbody.append(tr);
+  }
+  document.body.textContent = '';
+  document.body.append(page);
+  window.__testResults = { failed, total: results.length };
+}
+
+if (new URLSearchParams(location.search).has('test')) runTests();
+else initApp();
+</script>
+</body>
+</html>

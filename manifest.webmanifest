@@ -1,0 +1,12 @@
+{
+  "name": "Feed Tracker",
+  "short_name": "Feeds",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#121419",
+  "theme_color": "#121419",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
