@@ -1,7 +1,7 @@
 // Offline support. Serves the saved copy instantly (works with no signal),
 // then quietly fetches a fresh copy for next time. After you deploy an
 // update, it shows up the second time she opens the app.
-const CACHE = 'feed-tracker-v1';
+const CACHE = 'feed-tracker-v2';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png'];
 
 self.addEventListener('install', e => {

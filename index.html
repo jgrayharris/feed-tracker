@@ -13,7 +13,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <title>Feeds</title>
 <!--
-  Baby Feeding Tracker v1.1 (2026-10-10, pump tracker removed) — spec: Current-state/02_Spec.md
+  Baby Feeding Tracker v2.0 (2026-10-28, pump volume added) — spec: Current-state/02_Spec.md
   Everything lives in this one file. Sections in the <script>:
     1. Time zone helpers     (local-time math; DST-safe)
     2. Calculations          (pure functions — the formulas from the spec)
@@ -58,6 +58,7 @@ button { font: inherit; color: inherit; touch-action: manipulation; -webkit-tap-
 .stat .unit { font-size: 16px; color: var(--muted); font-weight: 500; }
 .stat .lbl { color: var(--muted); font-size: 14px; }
 .stat.wide { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 12px; font-size: 16px; }
+.stat.pump-btn { align-self: center; }
 
 .counts { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .btnrow { display: grid; gap: 10px; margin-top: 12px; }
@@ -157,13 +158,19 @@ a { color: var(--accent); }
   <section class="card stats">
     <div class="stat">
       <div class="val"><span id="oz24"></span> <span class="unit">oz</span></div>
-      <div class="lbl">in last 24h</div>
+      <div class="lbl">fed in last 24h</div>
       <div class="sub">Yesterday: <span id="ozYday"></span> oz</div>
     </div>
     <div class="stat">
       <div class="val" id="avgDur"></div>
       <div class="lbl" id="avgDurLbl"></div>
     </div>
+    <div class="stat">
+      <div class="val"><span id="pumped24"></span> <span class="unit">oz</span></div>
+      <div class="lbl">pumped in last 24h</div>
+      <div class="sub">Yesterday: <span id="pumpedYday"></span> oz</div>
+    </div>
+    <div class="stat pump-btn"><button class="btn small" id="logPump">+ Log pump</button></div>
     <div class="stat wide" id="targetLine"></div>
   </section>
 
@@ -271,6 +278,16 @@ a { color: var(--accent); }
         </div>
         <div class="hint" id="prefillNote">Duration and amount are copied from the last feed — check them.</div>
       </div>
+    </div>
+
+    <div class="field" id="pumpFields">
+      <label for="fPumpOz">Amount pumped (oz)</label>
+      <div class="stepper">
+        <button type="button" class="btn" data-step="fPumpOz" data-by="-0.5" aria-label="half an ounce less">−</button>
+        <input type="text" inputmode="decimal" id="fPumpOz">
+        <button type="button" class="btn" data-step="fPumpOz" data-by="0.5" aria-label="half an ounce more">+</button>
+      </div>
+      <div class="hint" id="pumpPrefillNote">Amount is copied from the last pump — check it.</div>
     </div>
 
     <div class="field" id="kindField">
@@ -402,6 +419,16 @@ function yesterdayOz(feeds, now, tz) {
   return feeds.filter(f => from <= f.endMs && f.endMs < to).reduce((a, f) => a + f.oz, 0);
 }
 
+// Pumps use the same 24h window and calendar-day rule as feeds, keyed on timeMs.
+function rollingPumpedOz(pumps, now) {
+  return pumps.filter(p => in24h(p.timeMs, now)).reduce((a, p) => a + p.oz, 0);
+}
+
+function yesterdayPumpedOz(pumps, now, tz) {
+  const from = tz.dayStart(now, -1), to = tz.dayStart(now, 0);
+  return pumps.filter(p => from <= p.timeMs && p.timeMs < to).reduce((a, p) => a + p.oz, 0);
+}
+
 function recentFeeds(feeds, n) {
   return feeds.slice().sort((a, b) => a.endMs - b.endMs).slice(-n);
 }
@@ -455,6 +482,10 @@ function dashboardView(data, now, tz) {
 
   v.oz24 = round1(rollingOz(data.feeds, now));
   v.ozYesterday = round1(yesterdayOz(data.feeds, now, tz));
+  // Shown next to the fed numbers, never compared or judged (D26).
+  const pumps = data.pumps || [];
+  v.pumped24 = round1(rollingPumpedOz(pumps, now));
+  v.pumpedYesterday = round1(yesterdayPumpedOz(pumps, now, tz));
 
   const r = recentFeeds(data.feeds, s.recentN);
   v.recentCount = r.length;
@@ -480,13 +511,14 @@ function toCsv(data, tz) {
   const rows = [
     ...data.feeds.map(f => ({ ms: f.endMs, line: `feed,${f.id},${t(f.endMs)},${f.durationMin},${f.oz},` })),
     ...data.diapers.map(d => ({ ms: d.timeMs, line: `diaper,${d.id},${t(d.timeMs)},,,${d.kind}` })),
+    ...(data.pumps || []).map(p => ({ ms: p.timeMs, line: `pump,${p.id},${t(p.timeMs)},,${p.oz},` })),
   ].sort((a, b) => a.ms - b.ms);
   return [CSV_HEADER, ...rows.map(r => r.line)].join('\n') + '\n';
 }
 
 function fromCsv(text, tz) {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
-  const out = { feeds: [], diapers: [], bad: 0 };
+  const out = { feeds: [], diapers: [], pumps: [], bad: 0 };
   if (!lines.length) return out;
   const head = lines[0].split(',').map(h => h.trim().toLowerCase());
   if (!head.includes('type') || !head.includes('time_local')) {
@@ -509,6 +541,10 @@ function fromCsv(text, tz) {
       const kind = get('diaper_kind').toLowerCase();
       if (!['wet', 'dirty', 'both'].includes(kind)) { out.bad++; continue; }
       out.diapers.push({ id, timeMs: ms, kind });
+    } else if (type === 'pump') {
+      const oz = Number(get('oz'));
+      if (!(oz > 0)) { out.bad++; continue; }
+      out.pumps.push({ id, timeMs: ms, oz, createdMs: now, updatedMs: now });
     } else {
       out.bad++;
     }
@@ -519,7 +555,7 @@ function fromCsv(text, tz) {
 // Adds entries whose id isn't already present. Returns counts.
 function mergeImport(data, parsed) {
   let added = 0, skipped = 0;
-  for (const key of ['feeds', 'diapers']) {
+  for (const key of ['feeds', 'diapers', 'pumps']) {
     const ids = new Set(data[key].map(e => e.id));
     for (const e of parsed[key]) {
       if (ids.has(e.id)) { skipped++; continue; }
@@ -531,12 +567,14 @@ function mergeImport(data, parsed) {
 
 // =====================================================================
 // 5. Storage — one localStorage key (02_Spec.md §1–2)
+//    The key stays 'feedTracker.v1' in v2: her data lives there (D28).
+//    v1 data has no `pumps`; normalize() fills it in as empty.
 // =====================================================================
 const KEY = 'feedTracker.v1';
 const EXPORT_KEY = 'feedTracker.lastExportMs';
 
 function emptyData() {
-  return { schemaVersion: 1, settings: { ...DEFAULT_SETTINGS }, feeds: [], diapers: [] };
+  return { schemaVersion: 2, settings: { ...DEFAULT_SETTINGS }, feeds: [], diapers: [], pumps: [] };
 }
 
 function normalize(raw) {
@@ -553,6 +591,7 @@ function normalize(raw) {
   const arr = x => (Array.isArray(x) ? x : []);
   d.feeds = arr(raw.feeds).filter(f => f && f.id && Number.isFinite(f.endMs) && f.durationMin > 0 && f.oz > 0);
   d.diapers = arr(raw.diapers).filter(x => x && x.id && Number.isFinite(x.timeMs) && ['wet', 'dirty', 'both'].includes(x.kind));
+  d.pumps = arr(raw.pumps).filter(p => p && p.id && Number.isFinite(p.timeMs) && p.oz > 0);
   return d;
 }
 
@@ -579,7 +618,7 @@ function uuid() {
 // =====================================================================
 const $ = sel => document.querySelector(sel);
 let tz, data;
-let sheetCtx = null;      // { type: 'feed'|'diaper', id: string|null }
+let sheetCtx = null;      // { type: 'feed'|'diaper'|'pump', id: string|null }
 let historyDays = 7;
 
 function store() {
@@ -587,9 +626,10 @@ function store() {
   catch (e) { alert('Could not save on this phone (storage is full or blocked). Export a backup from Settings.'); }
 }
 
-function listFor(type) { return type === 'feed' ? data.feeds : data.diapers; }
+const LIST_KEY = { feed: 'feeds', diaper: 'diapers', pump: 'pumps' };
+function listFor(type) { return data[LIST_KEY[type]]; }
 function removeEntry(type, id) {
-  const key = type === 'feed' ? 'feeds' : 'diapers';
+  const key = LIST_KEY[type];
   data[key] = data[key].filter(e => e.id !== id);
 }
 
@@ -604,6 +644,8 @@ function render() {
   $('#winLast').textContent = v.lastFeed;
   $('#oz24').textContent = v.oz24;
   $('#ozYday').textContent = v.ozYesterday;
+  $('#pumped24').textContent = v.pumped24;
+  $('#pumpedYday').textContent = v.pumpedYesterday;
   $('#avgDur').innerHTML = v.avgDur === '—' ? '—' : `${v.avgDur} <span class="unit">min</span>`;
   $('#avgDurLbl').textContent = v.recentCount ? `avg feed (last ${v.recentCount})` : 'avg feed';
   $('#targetLine').textContent = v.targetLine;
@@ -656,6 +698,7 @@ function openSheet(type, entry) {
   $('#fTime').value = tz.hm(ms);
   $('#fTimeLbl').textContent = isFeed ? 'End time' : 'Time';
   $('#feedFields').hidden = !isFeed;
+  $('#pumpFields').hidden = type !== 'pump';
   $('#kindField').hidden = type !== 'diaper';
   $('#fDelete').hidden = !editing;
   $('#fErr').textContent = '';
@@ -665,6 +708,12 @@ function openSheet(type, entry) {
     $('#fDur').value = src ? src.durationMin : '';
     $('#fOz').value = src ? String(src.oz) : '';
     $('#prefillNote').hidden = editing || !last;
+  }
+  if (type === 'pump') {
+    const last = latest(data.pumps, 'timeMs');
+    const src = entry || last;
+    $('#fPumpOz').value = src ? String(src.oz) : '4';   // 4.0 oz before the first pump (D27)
+    $('#pumpPrefillNote').hidden = editing || !last;
   }
   if (type === 'diaper') segSet($('#fKind'), entry.kind);
   updateTimeHint();
@@ -706,11 +755,17 @@ function saveSheet() {
     if (oz > 6 && !confirm(`${oz} oz is a big feed. Save it?`)) return;
     if (id) Object.assign(data.feeds.find(f => f.id === id), { endMs: ms, durationMin: dur, oz, updatedMs: now });
     else data.feeds.push({ id: uuid(), endMs: ms, durationMin: dur, oz, createdMs: now, updatedMs: now });
+  } else if (type === 'pump') {
+    const oz = Number($('#fPumpOz').value.trim().replace(',', '.'));
+    if (!(oz > 0) || Math.abs(oz * 2 - Math.round(oz * 2)) > 1e-9) return err('Amount must be in half ounces, like 4 or 4.5.');
+    if (oz > 10 && !confirm(`${oz} oz is a lot for one pump. Save it?`)) return;
+    if (id) Object.assign(data.pumps.find(p => p.id === id), { timeMs: ms, oz, updatedMs: now });
+    else data.pumps.push({ id: uuid(), timeMs: ms, oz, createdMs: now, updatedMs: now });
   } else {
     Object.assign(data.diapers.find(x => x.id === id), { timeMs: ms, kind: segGet($('#fKind')) });
   }
   store(); closeSheet(); render();
-  toast(id ? 'Saved' : 'Feed saved');
+  toast(id ? 'Saved' : type === 'pump' ? 'Pump saved' : 'Feed saved');
 }
 
 function deleteFromSheet() {
@@ -724,6 +779,7 @@ function stepField(id, by) {
   const el = $('#' + id);
   const cur = Number(el.value.replace(',', '.')) || 0;
   if (id === 'fOz') el.value = String(Math.max(0.25, Math.round((cur + by) * 4) / 4));
+  else if (id === 'fPumpOz') el.value = String(Math.max(0.5, Math.round((cur + by) * 2) / 2));
   else el.value = String(Math.max(1, Math.round(cur + by)));
 }
 
@@ -732,6 +788,7 @@ function allEntries() {
   return [
     ...data.feeds.map(f => ({ type: 'feed', id: f.id, ms: f.endMs, k: 'Feed', d: `${entryOz(f.oz)} oz · ${f.durationMin} min` })),
     ...data.diapers.map(x => ({ type: 'diaper', id: x.id, ms: x.timeMs, k: 'Diaper', d: KIND_LABEL[x.kind] })),
+    ...data.pumps.map(p => ({ type: 'pump', id: p.id, ms: p.timeMs, k: 'Pump', d: `${entryOz(p.oz)} oz pumped` })),
   ].sort((a, b) => b.ms - a.ms);
 }
 
@@ -853,6 +910,7 @@ function initApp() {
     }
   });
   $('#logFeed').onclick = () => openSheet('feed', null);
+  $('#logPump').onclick = () => openSheet('pump', null);
   $('#goHistory').onclick = () => showView('history');
   $('#goSettings').onclick = () => showView('settings');
   $('#histMore').onclick = () => { historyDays += 7; renderHistory(); };
@@ -903,6 +961,14 @@ diaper,D5,2026-10-10 07:00,,,wet
 diaper,D6,2026-10-10 12:00,,,both
 feed,DST1,2026-11-01 00:30,30,3.0,
 feed,DST2,2026-11-01 23:30,20,2.5,
+pump,P1,2026-10-09 12:00,,5.0,
+pump,P2,2026-10-09 14:00,,3.5,
+pump,P3,2026-10-09 19:30,,4.5,
+pump,P4,2026-10-10 01:00,,3.0,
+pump,P6,2026-10-10 11:30,,4.0,
+pump,P5,2026-10-10 08:15,,5.0,
+pump,DSTP1,2026-11-01 00:15,,4.0,
+pump,DSTP2,2026-11-01 23:45,,3.5,
 `;
 
 async function runTests() {
@@ -916,8 +982,9 @@ async function runTests() {
   const at = s => { const m = s.match(/(\d+)-(\d+)-(\d+) (\d+):(\d+)/); return tz.fromLocal(+m[1], +m[2], +m[3], +m[4], +m[5]); };
   const fx = fromCsv(csv, tz);
   const S = { ...DEFAULT_SETTINGS, targetMinOz: 2.0, targetMaxOz: 3.0 };
-  const base = { settings: S, feeds: fx.feeds.filter(f => !f.id.startsWith('DST')), diapers: fx.diapers };
+  const base = { settings: S, feeds: fx.feeds.filter(f => !f.id.startsWith('DST')), diapers: fx.diapers, pumps: fx.pumps.filter(p => !p.id.startsWith('DST')) };
   const dst = fx.feeds.filter(f => f.id.startsWith('DST'));
+  const dstPumps = fx.pumps.filter(p => p.id.startsWith('DST'));
   const results = [];
   const check = (test, what, got, exp) => results.push({ test, what, got, exp, ok: got === exp });
   const stamp = ms => `${tz.ymd(ms)} ${tz.hm(ms)}`;
@@ -974,7 +1041,7 @@ async function runTests() {
   // T7 — out-of-order entry: same results whatever order entries are stored in
   const ids = fx.feeds.map(f => f.id);
   check('T7', 'Fixture lists F9 before F8', ids.indexOf('F9') < ids.indexOf('F8'), true);
-  const reversed = { ...base, feeds: base.feeds.slice().reverse(), diapers: base.diapers.slice().reverse() };
+  const reversed = { ...base, feeds: base.feeds.slice().reverse(), diapers: base.diapers.slice().reverse(), pumps: base.pumps.slice().reverse() };
   check('T7', 'Reversed order → same dashboard as T1', JSON.stringify(dashboardView(reversed, now1, tz)), JSON.stringify(v1));
 
   // T8 — delete the latest feed (F9): everything recalculates from F8
@@ -998,19 +1065,45 @@ async function runTests() {
   check('T9', 'Nov 1 is a 25-hour day', (tz.dayStart(now9b, 0) - tz.dayStart(now9b, -1)) / HOUR, 25);
   check('T9', 'Yesterday oz viewed Nov 2, 8:00 AM', round1(yesterdayOz(dst, now9b, tz)), '5.5');
 
+  // T10 — pump volume (v2)
+  const pids = fx.pumps.map(p => p.id);
+  const feedPart = v => { const { pumped24, pumpedYesterday, ...rest } = v; return JSON.stringify(rest); };
+  check('T10', 'Fixture lists P6 before P5', pids.indexOf('P6') < pids.indexOf('P5'), true);
+  check('T10', 'Latest pump (max time)', latest(base.pumps, 'timeMs').id, 'P6');
+  check('T10', 'Pumped 24h oz', v1.pumped24, '16.5');
+  check('T10', 'Pumped 24h: P2 (exactly 24h old) excluded', in24h(base.pumps.find(p => p.id === 'P2').timeMs, now1), false);
+  check('T10', 'Fed 24h oz unchanged', v1.oz24, '18.5');
+  check('T10', 'Pumped yesterday oz', v1.pumpedYesterday, '13.0');
+  check('T10', 'Feed results identical with or without pumps', feedPart(v1), feedPart(dashboardView({ ...base, pumps: [] }, now1, tz)));
+  const v10 = dashboardView({ ...base, pumps: base.pumps.filter(p => p.id !== 'P6') }, now1, tz);
+  check('T10', 'Delete latest pump (P6): 24h', v10.pumped24, '12.5');
+  check('T10', 'Delete latest pump (P6): yesterday', v10.pumpedYesterday, '13.0');
+  check('T10', 'No pumps: 24h', v5.pumped24, '0.0');
+  check('T10', 'No pumps: yesterday', v5.pumpedYesterday, '0.0');
+  check('T10', 'Pick 11:45 PM at 12:10 AM', stamp(resolveEntryTime(23, 45, now6, tz)), '2026-10-09 23:45');
+  check('T10', 'DST: pumped 24h at Nov 1, 11:59 PM (not 7.5)', round1(rollingPumpedOz(dstPumps, at('2026-11-01 23:59'))), '3.5');
+  check('T10', 'DST: pumped yesterday viewed Nov 2, 8:00 AM', round1(yesterdayPumpedOz(dstPumps, now9b, tz)), '7.5');
+  const v1blob = { schemaVersion: 1, settings: S, feeds: base.feeds, diapers: base.diapers };
+  const up = normalize(JSON.parse(JSON.stringify(v1blob)));
+  check('T10', 'v1 data → v2: feeds and diapers kept, pumps empty', `${up.feeds.length} feeds, ${up.diapers.length} diapers, ${up.pumps.length} pumps`, `${base.feeds.length} feeds, ${base.diapers.length} diapers, 0 pumps`);
+  check('T10', 'v1 data → v2: dashboard same as T1', feedPart(dashboardView(up, now1, tz)), feedPart(dashboardView({ ...base, pumps: [] }, now1, tz)));
+  check('T10', 'v1 CSV (no pump rows) imports with 0 unreadable', fromCsv(toCsv({ ...base, pumps: [] }, tz), tz).bad, 0);
+  check('T10', 'Fixture reads with 0 unreadable rows', `${fx.bad} bad, ${fx.pumps.length} pumps`, '0 bad, 8 pumps');
+
   // Extras — rounding and backup round trip
   check('Extra', 'Rounding is half up (2.25 → 2.3)', round1(2.25), '2.3');
   check('Extra', 'A single entry shows as logged (2.75, 3.0)', `${entryOz(2.75)}, ${entryOz(3)}`, '2.75, 3.0');
-  const all = { ...base, feeds: fx.feeds };
+  const all = { ...base, feeds: fx.feeds, pumps: fx.pumps };
   const back = fromCsv(toCsv(all, tz), tz);
   const sig = d => JSON.stringify([
     d.feeds.map(f => [f.id, f.endMs, f.durationMin, f.oz]).sort(),
     d.diapers.map(x => [x.id, x.timeMs, x.kind]).sort(),
+    d.pumps.map(p => [p.id, p.timeMs, p.oz]).sort(),
   ]);
   check('Extra', 'CSV export → import gives identical entries', sig(back), sig(all));
   const copy = JSON.parse(JSON.stringify(all));
   const m = mergeImport(copy, back);
-  check('Extra', 'Re-importing the same file adds nothing', `${m.added} added, ${m.skipped} skipped`, `0 added, ${fx.feeds.length + fx.diapers.length} skipped`);
+  check('Extra', 'Re-importing the same file adds nothing', `${m.added} added, ${m.skipped} skipped`, `0 added, ${fx.feeds.length + fx.diapers.length + fx.pumps.length} skipped`);
 
   // Report
   const failed = results.filter(r => !r.ok).length;
